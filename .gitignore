@@ -39,6 +39,12 @@ backend/*.sqlite
 .env.local
 .env.*.local
 backend/.env
+*.env
+
+# Sensitive data
+*.key
+*.pem
+secrets/
 
 # IDE
 .vscode/*

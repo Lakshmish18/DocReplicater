@@ -52,7 +52,11 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     
     class Config:
-        env_file = ".env"
+        # Look for .env in project root (parent of backend folder)
+        # Path: backend/app/config.py -> backend/ -> project root/
+        _project_root = Path(__file__).parent.parent.parent
+        _env_file = _project_root / ".env"
+        env_file = str(_env_file) if _env_file.exists() else ".env"  # Fallback to backend/.env
         case_sensitive = True
     
     def setup_directories(self):

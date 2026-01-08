@@ -79,21 +79,21 @@ class EnhancedDocxGenerator:
         output_path: str
     ) -> str:
         """
-        Generate DOCX by doing SAFE find-and-replace on original document.
+        Generate DOCX by updating paragraphs directly using order_index.
         
-        CRITICAL: This method ONLY modifies text content of <w:t> elements.
+        CRITICAL: This method ONLY modifies text content of paragraphs.
         It NEVER modifies document structure, relationships, or any other XML.
         This ensures 100% preservation of images, graphics, formatting, colors, etc.
         
         Args:
-            sections: List of section data (for reference)
-            content_changes: Dict mapping original_content -> new_content
+            sections: List of section data with order_index and content
+            content_changes: Dict mapping original_content -> new_content (for logging)
             output_path: Path for output file
             
         Returns:
             Path to generated file
         """
-        logger.info(f"Generating DOCX with {len(content_changes)} text replacements")
+        logger.info(f"Generating DOCX with {len(sections)} sections, {len(content_changes)} content changes")
         
         if not self.original_docx_path or not Path(self.original_docx_path).exists():
             logger.warning("No original DOCX available, falling back to standard generation")
@@ -102,33 +102,91 @@ class EnhancedDocxGenerator:
         # Load original document - preserves ALL relationships (images, graphics, etc.)
         doc = Document(self.original_docx_path)
         
-        # Build a flat list of all (original, new) text pairs to replace
-        replacement_pairs = []
+        # Get all paragraphs from the document
+        paragraphs = list(doc.paragraphs)
         
-        for original_text, new_text in content_changes.items():
-            if not original_text or original_text == new_text:
+        # Create a map of order_index -> section data for quick lookup
+        sections_by_index = {s.get("order_index", -1): s for s in sections}
+        
+        # Update paragraphs by order_index
+        replacements_made = 0
+        for order_index, section in sections_by_index.items():
+            if order_index < 0:
                 continue
             
-            # Split by newlines to handle multi-line content
-            original_lines = [line.strip() for line in original_text.split('\n') if line.strip()]
-            new_lines = [line.strip() for line in new_text.split('\n') if line.strip()]
+            original_content = section.get("original_content", "").strip()
+            new_content = section.get("content", "").strip()
             
-            # Add line-by-line replacements
-            for i, orig_line in enumerate(original_lines):
-                if orig_line:
-                    # Match with corresponding new line, or use empty if new text is shorter
-                    new_line = new_lines[i] if i < len(new_lines) else ""
-                    if orig_line != new_line:
-                        replacement_pairs.append((orig_line, new_line))
+            # Skip if content hasn't changed
+            if original_content == new_content:
+                continue
             
-            # Also add the full text replacement in case it's stored as one piece
-            if original_text.strip() != new_text.strip():
-                replacement_pairs.append((original_text.strip(), new_text.strip()))
+            # Try to find paragraph by order_index
+            if order_index < len(paragraphs):
+                para = paragraphs[order_index]
+            else:
+                # If order_index is out of range, try to find by matching original content
+                logger.warning(f"Order index {order_index} out of range ({len(paragraphs)} paragraphs), trying content match")
+                para = None
+                for p in paragraphs:
+                    if p.text.strip() == original_content:
+                        para = p
+                        break
+                
+                if not para:
+                    logger.warning(f"Could not find paragraph for section {order_index} with content '{original_content[:50]}...'")
+                    continue
+            
+            # Update paragraph content while preserving formatting
+            if para:
+                # Preserve the formatting of the first run
+                if para.runs:
+                    first_run = para.runs[0]
+                    # Store formatting before clearing
+                    font_name = first_run.font.name
+                    font_size = first_run.font.size
+                    font_bold = first_run.font.bold
+                    font_italic = first_run.font.italic
+                    font_underline = first_run.font.underline
+                    font_color = first_run.font.color.rgb if first_run.font.color and first_run.font.color.rgb else None
+                    
+                    # Clear all runs
+                    para.clear()
+                    # Add new run with updated content
+                    new_run = para.add_run(new_content)
+                    # Restore formatting
+                    if font_name:
+                        new_run.font.name = font_name
+                    if font_size:
+                        new_run.font.size = font_size
+                    new_run.font.bold = font_bold
+                    new_run.font.italic = font_italic
+                    new_run.font.underline = font_underline
+                    if font_color:
+                        new_run.font.color.rgb = font_color
+                else:
+                    # No runs, just set text
+                    para.text = new_content
+                
+                replacements_made += 1
+                logger.info(f"Updated paragraph {order_index}: '{original_content[:50]}...' -> '{new_content[:50]}...'")
         
-        # Perform SAFE replacements - only modify w:t text content
-        replacements_made = self._safe_replace_all(doc, replacement_pairs)
+        logger.info(f"Made {replacements_made} paragraph updates")
         
-        logger.info(f"Made {replacements_made} text replacements")
+        # Also try text-based replacement for any remaining changes
+        if content_changes:
+            replacement_pairs = []
+            for original_text, new_text in content_changes.items():
+                if original_text and new_text and original_text != new_text:
+                    # Normalize whitespace for matching
+                    orig_normalized = ' '.join(original_text.split())
+                    new_normalized = ' '.join(new_text.split())
+                    if orig_normalized != new_normalized:
+                        replacement_pairs.append((orig_normalized, new_normalized))
+            
+            if replacement_pairs:
+                text_replacements = self._safe_replace_all(doc, replacement_pairs)
+                logger.info(f"Made {text_replacements} additional text replacements")
         
         # Save document - preserves all relationships
         doc.save(output_path)
